@@ -1,0 +1,19 @@
+# Build output
+/bin/
+/out/
+kafka-to-smtp
+kafka-to-smtp.exe
+*.exe
+*.test
+*.out
+
+# Local env / secrets
+.env
+*.local
+
+# Editors / OS
+.idea/
+.vs/
+.vscode/
+*.swp
+.DS_Store

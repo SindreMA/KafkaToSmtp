@@ -1,0 +1,13 @@
+{
+  "from": "noreply@sindrema.com",
+  "to": ["alice@example.com"],
+  "cc": [],
+  "bcc": [],
+  "replyTo": "support@sindrema.com",
+  "subject": "Hello from Kafka 👋",
+  "text": "This is the plain-text version of the message.",
+  "html": "<p>This is the <strong>HTML</strong> version of the message.</p>",
+  "headers": {
+    "X-Campaign": "welcome"
+  }
+}
