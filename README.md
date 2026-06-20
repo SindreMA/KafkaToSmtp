@@ -38,6 +38,8 @@ scales to **zero** when idle.
 
 ## Message format
 
+> **App developers:** see **[docs/SENDING-EMAIL.md](docs/SENDING-EMAIL.md)** for the full integration guide — the publish contract, delivery semantics, and copy-paste producer snippets (TypeScript / .NET / Python / Go).
+
 Publish UTF-8 JSON to the `email-outbound` topic. `to` accepts a string or array.
 
 ```json

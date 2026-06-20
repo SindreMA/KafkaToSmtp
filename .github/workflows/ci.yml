@@ -3,6 +3,11 @@ name: CI/CD
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'providers.example.json'
   pull_request:
     branches: [main]
   workflow_dispatch:
