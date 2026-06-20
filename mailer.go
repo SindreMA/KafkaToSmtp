@@ -11,30 +11,33 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
-	"net/textproto"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// Mailer builds a MIME message from an Envelope and submits it to the
-// configured SMTP server. The SMTP server (Maddy) is responsible for DKIM
-// signing, MX lookup, and final delivery — this worker only speaks submission.
-type Mailer struct {
-	cfg SMTPConfig
-}
-
-// Send renders and delivers one envelope. Parse/validation failures are
-// returned as permanent errors (the message is poison and should be skipped);
-// transient failures (e.g. the SMTP server being down) are returned plainly so
-// the caller retries.
-func (m *Mailer) Send(env *Envelope) error {
+// sendViaProvider renders the envelope and submits it through one provider's SMTP
+// relay. A permanent error (returned via permanent()) means the message itself is
+// bad and should be dropped; any other error is provider-specific and the caller
+// should fail over to the next provider.
+func sendViaProvider(p Provider, env *Envelope, cfg Config) error {
 	fromStr := env.From
+	fromFromMessage := fromStr != ""
 	if fromStr == "" {
-		fromStr = m.cfg.DefaultFrom
+		fromStr = p.From
 	}
+	if fromStr == "" {
+		fromStr = cfg.DefaultFrom
+	}
+
 	from, err := mail.ParseAddress(fromStr)
 	if err != nil {
-		return permanent(fmt.Errorf("invalid from address %q: %w", fromStr, err))
+		if fromFromMessage {
+			return permanent(fmt.Errorf("invalid from %q: %w", fromStr, err))
+		}
+		// Misconfigured provider/default From — treat as provider-specific so we
+		// don't drop the message; another provider may have a valid From.
+		return fmt.Errorf("invalid configured from %q (provider %s): %w", fromStr, p.Name, err)
 	}
 
 	rcpts, err := recipientAddrs(env)
@@ -43,21 +46,17 @@ func (m *Mailer) Send(env *Envelope) error {
 	}
 
 	msg := buildMIME(env, from)
-
-	if err := m.deliver(from.Address, rcpts, msg); err != nil {
-		return classify(err)
-	}
-	return nil
+	return deliver(p, cfg, from.Address, rcpts, msg)
 }
 
-func (m *Mailer) deliver(from string, rcpts []string, msg []byte) error {
-	addr := net.JoinHostPort(m.cfg.Host, m.cfg.Port)
-	dialer := &net.Dialer{Timeout: m.cfg.DialTimeout}
+func deliver(p Provider, cfg Config, from string, rcpts []string, msg []byte) error {
+	addr := net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
+	dialer := &net.Dialer{Timeout: cfg.DialTimeout}
 
 	var conn net.Conn
 	var err error
-	if m.cfg.TLS == "tls" {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, m.tlsConfig())
+	if p.TLS == "tls" {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConf(p))
 	} else {
 		conn, err = dialer.Dial("tcp", addr)
 	}
@@ -65,29 +64,29 @@ func (m *Mailer) deliver(from string, rcpts []string, msg []byte) error {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}
 
-	c, err := smtp.NewClient(conn, m.cfg.Host)
+	c, err := smtp.NewClient(conn, p.Host)
 	if err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("smtp handshake: %w", err)
 	}
 	defer c.Close()
 
-	if err := c.Hello(m.cfg.HeloName); err != nil {
+	if err := c.Hello(cfg.HeloName); err != nil {
 		return fmt.Errorf("helo: %w", err)
 	}
 
-	if m.cfg.TLS == "starttls" {
+	if p.TLS == "starttls" {
 		if ok, _ := c.Extension("STARTTLS"); !ok {
 			return errors.New("starttls requested but not advertised by server")
 		}
-		if err := c.StartTLS(m.tlsConfig()); err != nil {
+		if err := c.StartTLS(tlsConf(p)); err != nil {
 			return fmt.Errorf("starttls: %w", err)
 		}
 	}
 
-	if m.cfg.Username != "" {
+	if p.Username != "" {
 		if ok, _ := c.Extension("AUTH"); ok {
-			auth := smtp.PlainAuth("", m.cfg.Username, m.cfg.Password, m.cfg.Host)
+			auth := smtp.PlainAuth("", p.Username, p.Password, p.Host)
 			if err := c.Auth(auth); err != nil {
 				return fmt.Errorf("auth: %w", err)
 			}
@@ -117,10 +116,10 @@ func (m *Mailer) deliver(from string, rcpts []string, msg []byte) error {
 	return c.Quit()
 }
 
-func (m *Mailer) tlsConfig() *tls.Config {
+func tlsConf(p Provider) *tls.Config {
 	return &tls.Config{
-		ServerName:         m.cfg.Host,
-		InsecureSkipVerify: m.cfg.TLSInsecure, //nolint:gosec // opt-in for self-signed internal MTAs
+		ServerName:         p.Host,
+		InsecureSkipVerify: p.TLSInsecure, //nolint:gosec // opt-in per provider
 	}
 }
 
@@ -150,7 +149,7 @@ func buildMIME(env *Envelope, from *mail.Address) []byte {
 	header("Message-ID", messageID(from.Address))
 	for k, v := range env.Headers {
 		if isReservedHeader(k) {
-			continue // never let custom headers clobber structural ones
+			continue
 		}
 		header(k, mime.QEncoding.Encode("utf-8", v))
 	}
@@ -176,21 +175,19 @@ func buildMIME(env *Envelope, from *mail.Address) []byte {
 
 func writeSinglePart(b *strings.Builder, ctype, body string) {
 	b.WriteString("Content-Type: " + ctype + "\r\n")
-	b.WriteString("Content-Transfer-Encoding: base64\r\n")
-	b.WriteString("\r\n")
+	b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
 	b.WriteString(wrap76(base64.StdEncoding.EncodeToString([]byte(body))))
 }
 
 func writePart(b *strings.Builder, boundary, ctype, body string) {
 	b.WriteString("--" + boundary + "\r\n")
 	b.WriteString("Content-Type: " + ctype + "\r\n")
-	b.WriteString("Content-Transfer-Encoding: base64\r\n")
-	b.WriteString("\r\n")
+	b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
 	b.WriteString(wrap76(base64.StdEncoding.EncodeToString([]byte(body))))
 }
 
-// wrap76 splits a string into 76-character lines separated by CRLF, as required
-// for base64 in email bodies, and ensures a trailing CRLF.
+// wrap76 splits a string into 76-character CRLF-separated lines (required for
+// base64 email bodies) and ensures a trailing CRLF.
 func wrap76(s string) string {
 	var b strings.Builder
 	for len(s) > 76 {
@@ -257,8 +254,8 @@ func isReservedHeader(k string) bool {
 	return false
 }
 
-// permanentError marks a message that will never succeed (bad address, poison
-// content, or a 5xx SMTP rejection) so the caller skips rather than retries.
+// permanentError marks a message that will never succeed regardless of provider
+// (bad address syntax / poison content), so the caller drops it instead of retrying.
 type permanentError struct{ err error }
 
 func (e *permanentError) Error() string { return e.err.Error() }
@@ -269,14 +266,4 @@ func permanent(err error) error { return &permanentError{err: err} }
 func isPermanent(err error) bool {
 	var p *permanentError
 	return errors.As(err, &p)
-}
-
-// classify promotes 5xx SMTP replies to permanent errors; everything else
-// (connection refused, timeouts, 4xx) stays transient and is retried.
-func classify(err error) error {
-	var tp *textproto.Error
-	if errors.As(err, &tp) && tp.Code >= 500 && tp.Code < 600 {
-		return permanent(err)
-	}
-	return err
 }

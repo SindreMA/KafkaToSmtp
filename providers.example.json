@@ -1,0 +1,32 @@
+[
+  {
+    "name": "sendgrid",
+    "host": "smtp.sendgrid.net",
+    "port": 587,
+    "username": "apikey",
+    "password": "SG.xxxxxxxx",
+    "tls": "starttls",
+    "dailyLimit": 95,
+    "priority": 1
+  },
+  {
+    "name": "brevo",
+    "host": "smtp-relay.brevo.com",
+    "port": 587,
+    "username": "you@example.com",
+    "password": "your-brevo-smtp-key",
+    "tls": "starttls",
+    "dailyLimit": 290,
+    "priority": 2
+  },
+  {
+    "name": "mailjet",
+    "host": "in-v3.mailjet.com",
+    "port": 587,
+    "username": "your-mailjet-api-key",
+    "password": "your-mailjet-secret-key",
+    "tls": "starttls",
+    "dailyLimit": 195,
+    "priority": 3
+  }
+]

@@ -31,11 +31,12 @@ type Envelope struct {
 	Headers map[string]string `json:"headers"`
 }
 
-// Validate checks that the envelope has the minimum needed to send. defaultFrom
-// is the configured fallback sender used when the envelope omits "from".
-func (e *Envelope) Validate(defaultFrom string) error {
-	if e.From == "" && defaultFrom == "" {
-		return errors.New(`missing "from" and no DEFAULT_FROM configured`)
+// Validate checks that the envelope has the minimum needed to send.
+// hasFallbackFrom is true when a From can be supplied even if the message omits
+// it (via DEFAULT_FROM or a provider's From override).
+func (e *Envelope) Validate(hasFallbackFrom bool) error {
+	if e.From == "" && !hasFallbackFrom {
+		return errors.New(`missing "from" and no DEFAULT_FROM / provider From configured`)
 	}
 	if len(e.To)+len(e.Cc)+len(e.Bcc) == 0 {
 		return errors.New("no recipients (to/cc/bcc all empty)")
